@@ -1,0 +1,27 @@
+name: astrbot_plugin_apimart_image_gen
+display_name: APIMart GPT Image 2.5 生图
+short_desc: 通过聊天意图调用 GPT Image 2.5 生成图片
+desc: 通过 APIMart GPT Image 2.5 生图，支持异步任务查询、比例/分辨率/质量选择，并由 LLM 根据用户请求自动调用。
+author: STCaoMei
+version: 1.0.0
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - wecom
+  - wecom_ai_bot
+  - lark
+  - dingtalk
+  - discord
+  - slack
+  - kook
+  - vocechat
+  - weixin_official_account
+  - weixin_oc
+  - satori
+  - misskey
+  - line
+  - matrix
+  - mattermost
+astrbot_version: ">=4.5.1,<5"

@@ -1,0 +1,63 @@
+{
+  "api_key": {
+    "description": "APIMart API Key",
+    "type": "string",
+    "secret": true,
+    "hint": "密钥仅用于插件向 APIMart API 发起请求。也可通过环境变量 APIMART_API_KEY 提供。"
+  },
+  "api_base_url": {
+    "description": "API Base URL",
+    "type": "string",
+    "default": "https://api.apimart.ai",
+    "hint": "默认 APIMart 官方地址。兼容接口也可填写自定义 HTTP(S) 地址，不要附加 /v1 路径。"
+  },
+  "model": {
+    "description": "图像生成模型",
+    "type": "string",
+    "default": "gpt-image-2.5-flare",
+    "options": [
+      "gpt-image-2.5-flare",
+      "gpt-image-2.5-sunburst"
+    ],
+    "hint": "Flare 侧重速度；Sunburst 侧重编辑精度。"
+  },
+  "size": {
+    "description": "默认画面比例或像素尺寸",
+    "type": "string",
+    "default": "auto",
+    "hint": "如 auto、1:1、16:9 或 1600x1200。对话中可按用户要求覆盖。"
+  },
+  "resolution": {
+    "description": "默认分辨率",
+    "type": "string",
+    "default": "1k",
+    "options": ["1k", "2k", "4k"]
+  },
+  "quality": {
+    "description": "默认生成质量",
+    "type": "string",
+    "default": "medium",
+    "options": ["auto", "low", "medium", "high", "xhigh", "max"]
+  },
+  "output_format": {
+    "description": "输出图片格式",
+    "type": "string",
+    "default": "png",
+    "options": ["png", "jpeg", "webp"]
+  },
+  "timeout": {
+    "description": "单次 HTTP 请求超时（秒）",
+    "type": "int",
+    "default": 180
+  },
+  "poll_interval": {
+    "description": "异步任务轮询间隔（秒）",
+    "type": "int",
+    "default": 3
+  },
+  "max_wait": {
+    "description": "单个生成任务最长等待时间（秒）",
+    "type": "int",
+    "default": 600
+  }
+}
