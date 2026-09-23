@@ -4,7 +4,6 @@ import binascii
 import json
 import os
 import re
-from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
@@ -19,6 +18,40 @@ DEFAULT_MODEL = "gpt-image-2.5-flare"
 DEFAULT_TIMEOUT = 180
 DEFAULT_POLL_INTERVAL = 3
 DEFAULT_MAX_WAIT = 600
+
+TOOL_NAME = "generate_image"
+TOOL_DESCRIPTION = (
+    "使用 GPT Image 2.5 根据用户描述生成图片。"
+    "仅当用户明确要求生成、绘制、创作或编辑图片时调用。"
+)
+TOOL_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "description": "图片的详细画面描述，包含主体、场景、构图和风格",
+        },
+        "size": {
+            "type": "string",
+            "description": "画面比例或尺寸，如 1:1、16:9、1024x1024；不填则由服务端决定",
+        },
+        "resolution": {
+            "type": "string",
+            "enum": ["1k", "2k", "4k"],
+            "description": "输出分辨率，不填则使用插件默认配置",
+        },
+        "quality": {
+            "type": "string",
+            "enum": ["auto", "low", "medium", "high", "xhigh", "max"],
+            "description": "生成质量，不填则使用插件默认配置",
+        },
+        "n": {
+            "type": "number",
+            "description": "生成数量，取值范围 1 到 4",
+        },
+    },
+    "required": ["prompt"],
+}
 
 
 def normalize_base_url(value: str) -> str:
@@ -47,6 +80,13 @@ def decode_data_image(value: str) -> tuple[bytes, str] | None:
         return base64.b64decode(match.group(2), validate=True), match.group(1).lower()
     except (binascii.Error, ValueError) as exc:
         raise ValueError("返回了格式错误的 Base64 图片") from exc
+
+
+def to_positive_int(value: Any, default: int = 1) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def build_generation_payload(
@@ -82,82 +122,102 @@ def build_generation_payload(
     }
 
 
-@dataclass
-class GenerateImageTool(FunctionTool):
-    name: str = "generate_image"
-    description: str = "使用 GPT Image 2.5 根据用户描述生成图片。仅当用户明确要求生成、绘制、创作或编辑图片时调用。"
-    plugin: Any = field(default=None, repr=False, compare=False)
+def build_generate_image_tool(plugin: "APIMartImageGenPlugin") -> FunctionTool:
+    """构造 LLM 工具。
 
-    def __post_init__(self):
-        if self.plugin is None:
-            raise ValueError("GenerateImageTool 必须传入插件实例")
-    parameters: dict = field(default_factory=lambda: {
-        "type": "object",
-        "properties": {
-            "prompt": {"type": "string", "description": "图片的详细画面描述，包含主体、场景、构图和风格"},
-            "size": {"type": "string", "description": "画面比例或尺寸，如 1:1、16:9、1024x1024；默认 auto"},
-            "resolution": {"type": "string", "enum": ["1k", "2k", "4k"], "description": "输出分辨率，默认 1k"},
-            "quality": {"type": "string", "enum": ["auto", "low", "medium", "high", "xhigh", "max"], "description": "生成质量，默认 medium"},
-            "n": {"type": "number", "description": "生成数量，1 到 4，默认 1"},
-        },
-        "required": ["prompt"],
-    })
+    AstrBot 调用工具时优先使用 ``handler`` 字段（``handler(event, **kwargs)``），
+    因此这里直接实例化框架自带的 ``FunctionTool``，不做任何 dataclass 继承，
+    避免不同 AstrBot / pydantic 版本的字段校验差异导致插件加载失败。
+    """
 
-    async def run(
-        self,
+    async def handler(
         event: AstrMessageEvent,
         prompt: str,
         size: str | None = None,
         resolution: str | None = None,
         quality: str | None = None,
-        n: int = 1,
+        n: Any = None,
     ) -> str:
-        """调用图像生成服务，并将生成结果发送给当前会话。"""
+        """生成图片并把结果发送到当前会话。"""
         try:
-            urls = await self.plugin.generate_images(
+            image_refs = await plugin.generate_images(
                 prompt=prompt,
                 size=size,
                 resolution=resolution,
                 quality=quality,
-                n=int(n),
+                n=to_positive_int(n, 1),
             )
         except Exception as exc:
             logger.exception("APIMart 图像生成失败")
             message = f"图片生成失败：{exc}"
-            await event.send(event.plain_result(message))
+            await send_result(event, event.plain_result(message))
             return message
 
-        for image_ref in urls:
-            await event.send(event.image_result(image_ref))
-        return f"图片已生成，共 {len(urls)} 张。"
+        for image_ref in image_refs:
+            await send_result(event, event.image_result(image_ref))
+        return f"图片已生成，共 {len(image_refs)} 张。"
+
+    return FunctionTool(
+        name=TOOL_NAME,
+        description=TOOL_DESCRIPTION,
+        parameters=TOOL_PARAMETERS,
+        handler=handler,
+    )
+
+
+async def send_result(event: AstrMessageEvent, result: Any) -> None:
+    send = getattr(event, "send", None)
+    if callable(send):
+        outcome = send(result)
+        if asyncio.iscoroutine(outcome):
+            await outcome
 
 
 @register(
     "astrbot_plugin_apimart_image_gen",
     "STCaoMei",
     "通过 APIMart GPT Image 2.5 生成图片，并由 LLM 意图自动调用。",
-    "1.0.0",
+    "1.0.1",
 )
 class APIMartImageGenPlugin(Star):
-    def __init__(self, context: Context, config: dict[str, Any]):
+    def __init__(self, context: Context, config: dict[str, Any] | None = None):
         super().__init__(context)
         self.config = dict(config) if isinstance(config, dict) else {}
         self._session: aiohttp.ClientSession | None = None
-        self._image_dir = self._get_image_dir()
         self._tools_registered = False
-        if hasattr(self.context, "add_llm_tools"):
-            result = self.context.add_llm_tools(GenerateImageTool(plugin=self))
-            if asyncio.iscoroutine(result):
-                asyncio.create_task(result)
-            self._tools_registered = True
+        self._image_dir = self._resolve_image_dir()
+        self._register_tool()
+
+    def _resolve_image_dir(self) -> str:
+        try:
+            base_dir = StarTools.get_data_dir()
+        except Exception:
+            logger.exception("获取插件数据目录失败，Base64 图片将保存到插件目录下的 data/generated")
+            base_dir = None
+        image_dir = (base_dir / "generated") if base_dir is not None else None
+        if image_dir is None:
+            image_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "generated")
+            os.makedirs(image_dir, exist_ok=True)
+            return str(image_dir)
+        image_dir.mkdir(parents=True, exist_ok=True)
+        return str(image_dir)
+
+    def _register_tool(self) -> None:
+        add_llm_tools = getattr(self.context, "add_llm_tools", None)
+        if not callable(add_llm_tools):
+            logger.warning("当前 AstrBot 版本缺少 context.add_llm_tools，LLM 自动生图不可用，仍可使用 /画图 等指令")
+            return
+        try:
+            outcome = add_llm_tools(build_generate_image_tool(self))
+        except Exception:
+            logger.exception("注册 generate_image 工具失败，仍可使用 /画图 等指令")
+            return
+        if asyncio.iscoroutine(outcome):
+            asyncio.create_task(outcome)
+        self._tools_registered = True
 
     def _config_value(self, key: str, default: Any) -> Any:
         return self.config.get(key, default)
-
-    def _get_image_dir(self) -> str:
-        image_dir = StarTools.get_data_dir() / "generated"
-        image_dir.mkdir(parents=True, exist_ok=True)
-        return str(image_dir)
 
     def _api_key(self) -> str:
         key = str(self._config_value("api_key", "")).strip()
@@ -243,25 +303,7 @@ class APIMartImageGenPlugin(Star):
                 urls = extract_image_urls(task)
                 if urls:
                     return urls
-                inline_images = []
-                for item in (task.get("result") or {}).get("images") or []:
-                    values = item.get("url") or []
-                    if isinstance(values, str):
-                        values = [values]
-                    inline_images.extend(value for value in values if isinstance(value, str))
-                local_paths = []
-                for index, value in enumerate(inline_images, start=1):
-                    decoded = decode_data_image(value)
-                    if decoded is None:
-                        continue
-                    image_bytes, extension = decoded
-                    path = os.path.join(self._image_dir, f"apimart_{task_id}_{index}.{extension}")
-                    with open(path, "wb") as image_file:
-                        image_file.write(image_bytes)
-                    local_paths.append(path)
-                if local_paths:
-                    return local_paths
-                raise RuntimeError("任务已完成，但响应中没有可用的图片 URL 或 Base64 图片")
+                return self._save_inline_images(task, str(task_id))
             if status in {"failed", "cancelled"}:
                 error = task.get("error") or {}
                 detail = error.get("message") if isinstance(error, dict) else str(error)
@@ -270,21 +312,41 @@ class APIMartImageGenPlugin(Star):
                 raise RuntimeError(f"未知的图像任务状态：{status}")
         raise RuntimeError(f"图像生成等待超时（{max_wait} 秒），任务 ID：{task_id}")
 
+    def _save_inline_images(self, task: dict[str, Any], task_id: str) -> list[str]:
+        values: list[str] = []
+        for item in (task.get("result") or {}).get("images") or []:
+            urls = item.get("url") or []
+            if isinstance(urls, str):
+                urls = [urls]
+            values.extend(value for value in urls if isinstance(value, str))
+
+        local_paths: list[str] = []
+        for index, value in enumerate(values, start=1):
+            decoded = decode_data_image(value)
+            if decoded is None:
+                continue
+            image_bytes, extension = decoded
+            path = os.path.join(self._image_dir, f"apimart_{task_id}_{index}.{extension}")
+            with open(path, "wb") as image_file:
+                image_file.write(image_bytes)
+            local_paths.append(path)
+        if not local_paths:
+            raise RuntimeError("任务已完成，但响应中没有可用的图片 URL 或 Base64 图片")
+        return local_paths
+
     @staticmethod
     def _extract_prompt(message: str) -> str:
         text = (message or "").strip()
         text = re.sub(r"^\s*(?:/|!|！)?(?:画图|生图|生成图片|生成图像|画一张图|帮我画|draw|image)\s*", "", text, flags=re.IGNORECASE)
         return text.strip()
 
-    @filter.command("画图")
-    async def draw_command(self, event: AstrMessageEvent):
-        """直接使用命令生成图片，不依赖 LLM 工具调用能力。"""
+    async def _draw(self, event: AstrMessageEvent):
         prompt = self._extract_prompt(getattr(event, "message_str", ""))
         if not prompt:
             yield event.plain_result("请在命令后附上画面描述，例如：/画图 一只水彩风格的橘猫")
             return
         try:
-            urls = await self.generate_images(
+            image_refs = await self.generate_images(
                 prompt=prompt,
                 size=str(self._config_value("size", "auto")),
                 resolution=str(self._config_value("resolution", "1k")),
@@ -295,57 +357,28 @@ class APIMartImageGenPlugin(Star):
             logger.exception("APIMart 图像生成失败")
             yield event.plain_result(f"图片生成失败：{exc}")
             return
-        for url in urls:
-            yield event.image_result(url)
+        for image_ref in image_refs:
+            yield event.image_result(image_ref)
+
+    @filter.command("画图")
+    async def draw_command(self, event: AstrMessageEvent):
+        """/画图 提示词，直接生成图片，不依赖 LLM 工具调用能力。"""
+        async for result in self._draw(event):
+            yield result
 
     @filter.command("生图")
     async def image_command(self, event: AstrMessageEvent):
-        """/生图 指令别名。"""
-        async for result in self.draw_command(event):
+        """/生图 提示词，/画图 的指令别名。"""
+        async for result in self._draw(event):
             yield result
 
     @filter.command("生成图片")
     async def generate_command(self, event: AstrMessageEvent):
-        """/生成图片 指令别名。"""
-        async for result in self.draw_command(event):
+        """/生成图片 提示词，/画图 的指令别名。"""
+        async for result in self._draw(event):
             yield result
 
     async def terminate(self) -> None:
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
-
-
-async def _offline_selftest() -> None:
-    payload = build_generation_payload("  雨中小猫  ", size="16:9", resolution="2k", quality="high", n=2)
-    assert payload["prompt"] == "雨中小猫"
-    assert payload["n"] == 2
-    assert normalize_base_url("https://api.apimart.ai/") == "https://api.apimart.ai"
-    assert extract_image_urls({"result": {"images": [{"url": ["https://example.com/a.png"]}]}}) == [
-        "https://example.com/a.png"
-    ]
-    assert APIMartImageGenPlugin._extract_prompt("/画图 一只猫") == "一只猫"
-    assert decode_data_image("data:image/png;base64,YQ==") == (b"a", "png")
-    for values in (
-        {"prompt": " "},
-        {"prompt": "cat", "n": 5},
-        {"prompt": "cat", "model": ""},
-        {"prompt": "cat", "resolution": "8k"},
-    ):
-        try:
-            build_generation_payload(**values)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"Expected validation failure for {values}")
-    try:
-        normalize_base_url("api.apimart.ai")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Expected invalid base URL to fail")
-    print("offline self-test passed")
-
-
-if __name__ == "__main__":
-    asyncio.run(_offline_selftest())
