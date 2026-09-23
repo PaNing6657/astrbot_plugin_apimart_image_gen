@@ -21,15 +21,17 @@ DEFAULT_MAX_WAIT = 600
 
 TOOL_NAME = "generate_image"
 TOOL_DESCRIPTION = (
-    "使用 GPT Image 2.5 根据用户描述生成图片。"
-    "仅当用户明确要求生成、绘制、创作或编辑图片时调用。"
+    "根据文字描述生成或编辑图片（文生图 / 图生图）。"
+    "当用户要求画图、画画、生成图片、绘制插画 / 立绘 / 头像 / 海报 / 壁纸，"
+    "或要求修改、重绘已有图片时，必须调用本工具。"
+    "不要用代码解释器、PIL、matplotlib 等方式绘图，也不要回复自己无法生成图片。"
 )
 TOOL_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {
         "prompt": {
             "type": "string",
-            "description": "图片的详细画面描述，包含主体、场景、构图和风格",
+            "description": "必填。画面描述，建议写清主体、外貌特征、场景、构图、风格与光线",
         },
         "size": {
             "type": "string",
@@ -177,7 +179,7 @@ async def send_result(event: AstrMessageEvent, result: Any) -> None:
     "astrbot_plugin_apimart_image_gen",
     "STCaoMei",
     "通过 APIMart GPT Image 2.5 生成图片，并由 LLM 意图自动调用。",
-    "1.0.1",
+    "1.0.2",
 )
 class APIMartImageGenPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
@@ -215,6 +217,19 @@ class APIMartImageGenPlugin(Star):
         if asyncio.iscoroutine(outcome):
             asyncio.create_task(outcome)
         self._tools_registered = True
+        logger.info(f"已注册 LLM 工具 {TOOL_NAME}：模型可在用户要求画图时自动调用，也可用 /画图 指令直接触发")
+        self._log_tool_snapshot()
+
+    def _log_tool_snapshot(self) -> None:
+        get_manager = getattr(self.context, "get_llm_tool_manager", None)
+        if not callable(get_manager):
+            return
+        try:
+            names = [tool.name for tool in get_manager().func_list]
+        except Exception:
+            logger.exception("读取 LLM 工具列表失败")
+            return
+        logger.info(f"当前共有 {len(names)} 个 LLM 工具，包含 {TOOL_NAME}：{TOOL_NAME in names}")
 
     def _config_value(self, key: str, default: Any) -> Any:
         return self.config.get(key, default)
