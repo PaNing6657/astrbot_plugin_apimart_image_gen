@@ -84,9 +84,13 @@ def build_generation_payload(
 
 @dataclass
 class GenerateImageTool(FunctionTool):
-    plugin: Any = field(repr=False)
     name: str = "generate_image"
     description: str = "使用 GPT Image 2.5 根据用户描述生成图片。仅当用户明确要求生成、绘制、创作或编辑图片时调用。"
+    plugin: Any = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self):
+        if self.plugin is None:
+            raise ValueError("GenerateImageTool 必须传入插件实例")
     parameters: dict = field(default_factory=lambda: {
         "type": "object",
         "properties": {
@@ -142,7 +146,7 @@ class APIMartImageGenPlugin(Star):
         self._image_dir = self._get_image_dir()
         self._tools_registered = False
         if hasattr(self.context, "add_llm_tools"):
-            result = self.context.add_llm_tools(GenerateImageTool(self))
+            result = self.context.add_llm_tools(GenerateImageTool(plugin=self))
             if asyncio.iscoroutine(result):
                 asyncio.create_task(result)
             self._tools_registered = True
